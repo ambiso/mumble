@@ -176,6 +176,8 @@ protected:
 	void contextCallback(pa_context *c);
 	void eventCallback(pa_mainloop_api *a, pa_defer_event *e);
 
+	/// Creates pacContext and starts connecting it to the server
+	void connectContext(pa_context_flags_t flags);
 	void query();
 
 	QString outputDevice() const;

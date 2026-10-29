@@ -101,19 +101,7 @@ PulseAudioSystem::PulseAudioSystem() {
 	pam                  = m_pulseAudio.threaded_mainloop_new();
 	pa_mainloop_api *api = m_pulseAudio.threaded_mainloop_get_api(pam);
 
-	pa_proplist *proplist = m_pulseAudio.proplist_new();
-	m_pulseAudio.proplist_sets(proplist, PA_PROP_APPLICATION_NAME, "Mumble");
-	m_pulseAudio.proplist_sets(proplist, PA_PROP_APPLICATION_ID, "info.mumble.mumble");
-	m_pulseAudio.proplist_sets(proplist, PA_PROP_APPLICATION_ICON_NAME, "mumble");
-	m_pulseAudio.proplist_sets(proplist, PA_PROP_MEDIA_ROLE, "game");
-
-	pacContext = m_pulseAudio.context_new_with_proplist(api, nullptr, proplist);
-	m_pulseAudio.proplist_free(proplist);
-
-	m_pulseAudio.context_set_subscribe_callback(pacContext, subscribe_callback, this);
-
-	m_pulseAudio.context_set_state_callback(pacContext, context_state_callback, this);
-	m_pulseAudio.context_connect(pacContext, nullptr, PA_CONTEXT_NOAUTOSPAWN, nullptr);
+	connectContext(PA_CONTEXT_NOAUTOSPAWN);
 
 	pade = api->defer_new(api, defer_event_callback, this);
 	api->defer_enable(pade, false);
@@ -146,6 +134,22 @@ PulseAudioSystem::~PulseAudioSystem() {
 	m_pulseAudio.context_disconnect(pacContext);
 	m_pulseAudio.context_unref(pacContext);
 	m_pulseAudio.threaded_mainloop_free(pam);
+}
+
+void PulseAudioSystem::connectContext(pa_context_flags_t flags) {
+	pa_proplist *proplist = m_pulseAudio.proplist_new();
+	m_pulseAudio.proplist_sets(proplist, PA_PROP_APPLICATION_NAME, "Mumble");
+	m_pulseAudio.proplist_sets(proplist, PA_PROP_APPLICATION_ID, "info.mumble.mumble");
+	m_pulseAudio.proplist_sets(proplist, PA_PROP_APPLICATION_ICON_NAME, "mumble");
+	m_pulseAudio.proplist_sets(proplist, PA_PROP_MEDIA_ROLE, "game");
+
+	pacContext = m_pulseAudio.context_new_with_proplist(m_pulseAudio.threaded_mainloop_get_api(pam), nullptr, proplist);
+	m_pulseAudio.proplist_free(proplist);
+
+	m_pulseAudio.context_set_subscribe_callback(pacContext, subscribe_callback, this);
+
+	m_pulseAudio.context_set_state_callback(pacContext, context_state_callback, this);
+	m_pulseAudio.context_connect(pacContext, nullptr, flags, nullptr);
 }
 
 QString PulseAudioSystem::outputDevice() const {
@@ -190,6 +194,31 @@ void PulseAudioSystem::defer_event_callback(pa_mainloop_api *a, pa_defer_event *
 
 void PulseAudioSystem::eventCallback(pa_mainloop_api *api, pa_defer_event *) {
 	api->defer_enable(pade, false);
+
+	// A context cannot be reused once the connection is lost (e.g. because the server was restarted), so it is
+	// replaced. This is usually triggered by the streams of the old context reporting their failure. A context that
+	// fails before it is ready has no streams yet, so a server that keeps rejecting us doesn't cause a reconnect loop.
+	if (bPulseIsGood && !PA_CONTEXT_IS_GOOD(m_pulseAudio.context_get_state(pacContext))) {
+		qWarning("PulseAudio: Reconnecting");
+
+		const auto releaseStream = [this](pa_stream *&stream) {
+			if (stream) {
+				m_pulseAudio.stream_unref(stream);
+				stream = nullptr;
+			}
+		};
+		releaseStream(pasInput);
+		releaseStream(pasOutput);
+		releaseStream(pasSpeaker);
+		m_pulseAudio.context_unref(pacContext);
+
+		bSourceDone = bSinkDone = bServerDone = false;
+		iSinkId                               = -1;
+
+		// Wait for the server to come back instead of failing right away
+		connectContext(static_cast< pa_context_flags_t >(PA_CONTEXT_NOAUTOSPAWN | PA_CONTEXT_NOFAIL));
+		return;
+	}
 
 	if (!bSourceDone || !bSinkDone || !bServerDone)
 		return;
