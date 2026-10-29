@@ -375,11 +375,9 @@ void PipeWireInput::processCallback(void *param) {
 	}
 
 	spa_data &data = buffer->buffer->datas[0];
-	if (!data.data) {
-		return;
+	if (data.data) {
+		pwi->addMic(data.data, static_cast< unsigned int >(data.chunk->size / sizeof(float)));
 	}
-
-	pwi->addMic(data.data, static_cast< unsigned int >(data.chunk->size / sizeof(float)));
 
 	pwi->m_engine->queueBuffer(buffer);
 }
@@ -439,13 +437,11 @@ void PipeWireOutput::processCallback(void *param) {
 		return;
 	}
 
-	spa_data &data = buffer->buffer->datas[0];
-	if (!data.data) {
-		return;
-	}
-
+	spa_data &data   = buffer->buffer->datas[0];
 	spa_chunk *chunk = data.chunk;
-	if (!chunk) {
+	if (!data.data || !chunk) {
+		// Every dequeued buffer has to be queued again, otherwise the stream runs out of buffers
+		pwo->m_engine->queueBuffer(buffer);
 		return;
 	}
 
