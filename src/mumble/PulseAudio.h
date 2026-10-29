@@ -135,6 +135,10 @@ protected:
 	pa_defer_event *pade;
 
 	bool bSourceDone, bSinkDone, bServerDone, bRunning;
+	/// Whether failed streams may be recreated. Only set when something changed (devices were re-queried, the audio
+	/// system was (re)started or the server killed a working stream), as recreating a stream that fails right away
+	/// would loop.
+	bool bRetryFailedStreams = false;
 
 	QString qsDefaultInput, qsDefaultOutput;
 
@@ -177,6 +181,7 @@ protected:
 	QString outputDevice() const;
 	QString inputDevice() const;
 
+	void streamFailed(pa_stream *s);
 	void setVolumes();
 	PulseAttenuation *getAttenuation(QString stream_restore_id);
 

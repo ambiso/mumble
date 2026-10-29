@@ -177,6 +177,7 @@ void PulseAudioSystem::wakeup() {
 
 void PulseAudioSystem::wakeup_lock() {
 	m_pulseAudio.threaded_mainloop_lock(pam);
+	bRetryFailedStreams  = true;
 	pa_mainloop_api *api = m_pulseAudio.threaded_mainloop_get_api(pam);
 	api->defer_enable(pade, true);
 	m_pulseAudio.threaded_mainloop_unlock(pam);
@@ -210,6 +211,12 @@ void PulseAudioSystem::eventCallback(pa_mainloop_api *api, pa_defer_event *) {
 			do_stop = true;
 		} else if (pao) {
 			switch (ost) {
+				// A failed stream cannot be reconnected and is replaced just like a terminated one
+				case PA_STREAM_FAILED:
+					if (!bRetryFailedStreams) {
+						break;
+					}
+					// Fallthrough
 				case PA_STREAM_TERMINATED: {
 					if (pasOutput)
 						m_pulseAudio.stream_unref(pasOutput);
@@ -278,6 +285,11 @@ void PulseAudioSystem::eventCallback(pa_mainloop_api *api, pa_defer_event *) {
 			do_stop = true;
 		} else if (pai) {
 			switch (ist) {
+				case PA_STREAM_FAILED:
+					if (!bRetryFailedStreams) {
+						break;
+					}
+					// Fallthrough
 				case PA_STREAM_TERMINATED: {
 					if (pasInput)
 						m_pulseAudio.stream_unref(pasInput);
@@ -339,6 +351,11 @@ void PulseAudioSystem::eventCallback(pa_mainloop_api *api, pa_defer_event *) {
 			do_stop = true;
 		} else if (pai && Global::get().s.echoOption != EchoCancelOptionID::DISABLED) {
 			switch (est) {
+				case PA_STREAM_FAILED:
+					if (!bRetryFailedStreams) {
+						break;
+					}
+					// Fallthrough
 				case PA_STREAM_TERMINATED: {
 					if (pasSpeaker)
 						m_pulseAudio.stream_unref(pasSpeaker);
@@ -394,6 +411,8 @@ void PulseAudioSystem::eventCallback(pa_mainloop_api *api, pa_defer_event *) {
 			m_pulseAudio.stream_connect_record(pasSpeaker, qPrintable(edev), &buff, PA_STREAM_ADJUST_LATENCY);
 		}
 	}
+
+	bRetryFailedStreams = false;
 }
 
 void PulseAudioSystem::context_state_callback(pa_context *c, void *userdata) {
@@ -478,7 +497,7 @@ void PulseAudioSystem::write_stream_callback(pa_stream *s, void *userdata) {
 
 	switch (pa.stream_get_state(s)) {
 		case PA_STREAM_FAILED:
-			qWarning("PulseAudio: Stream error: %s", pa.strerror(pa.context_errno(pa.stream_get_context(s))));
+			pas->streamFailed(s);
 			break;
 		default:
 			break;
@@ -496,12 +515,23 @@ void PulseAudioSystem::read_stream_callback(pa_stream *s, void *userdata) {
 
 	switch (pa.stream_get_state(s)) {
 		case PA_STREAM_FAILED:
-			qWarning("PulseAudio: Stream error: %s", pa.strerror(pa.context_errno(pa.stream_get_context(s))));
+			pas->streamFailed(s);
 			break;
 		default:
 			break;
 	}
 	pas->wakeup();
+}
+
+void PulseAudioSystem::streamFailed(pa_stream *s) {
+	const int error = m_pulseAudio.context_errno(m_pulseAudio.stream_get_context(s));
+	qWarning("PulseAudio: Stream error: %s", m_pulseAudio.strerror(error));
+
+	// The server killed a stream that was working, so recreating it right away is likely to succeed. Other failures
+	// (e.g. no device to connect to) are only retried once something changed.
+	if (error == PA_ERR_KILLED) {
+		bRetryFailedStreams = true;
+	}
 }
 
 void PulseAudioSystem::read_callback(pa_stream *s, size_t bytes, void *userdata) {
@@ -847,6 +877,7 @@ void PulseAudioSystem::restore_volume_success_callback(pa_context *, int, void *
 
 void PulseAudioSystem::query() {
 	bSourceDone = bSinkDone = bServerDone = false;
+	bRetryFailedStreams                   = true;
 	qhInput.clear();
 	qhOutput.clear();
 	qhEchoMap.clear();
