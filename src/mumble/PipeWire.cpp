@@ -5,6 +5,7 @@
 
 #include "PipeWire.h"
 
+#include "MainWindow.h"
 #include "Global.h"
 
 #include <pipewire/core.h>
@@ -13,6 +14,8 @@
 
 #include <spa/param/audio/format-utils.h>
 #include <spa/pod/builder.h>
+
+#include <atomic>
 
 #define RESOLVE(var)                                                  \
 	{                                                                 \
@@ -127,6 +130,21 @@ void PipeWireInit::destroy() {
 
 static PipeWireInit pwi;
 
+// Set while an audio reset is queued, so that input and output losing their connection at the same time only cause a
+// single reset. It is cleared when a new engine is created: by then the reset has destroyed the old engines, so only
+// the new streams can trigger another reset.
+static std::atomic_bool resetPending(false);
+
+static void stateChangedCallback(void *, pw_stream_state, pw_stream_state state, const char *error) {
+	// UNCONNECTED with an error means the connection to the daemon was lost (e.g. because it was restarted).
+	// PW_STREAM_STATE_ERROR is also emitted for non-fatal conditions such as no target node being available,
+	// for which an audio reset would not help and would just repeat.
+	if (state == PW_STREAM_STATE_UNCONNECTED && error && !resetPending.exchange(true)) {
+		qWarning("PipeWire: Lost connection to the daemon (%s), resetting audio", error);
+		QMetaObject::invokeMethod(Global::get().mw, &MainWindow::onResetAudio, Qt::QueuedConnection);
+	}
+}
+
 PipeWireSystem::PipeWireSystem() : m_ok(false), m_users(0) {
 	// clang-format off
 	const QStringList names {
@@ -184,6 +202,8 @@ PipeWireSystem::~PipeWireSystem() {
 
 PipeWireEngine::PipeWireEngine(const char *category, void *param, const std::function< void(void *param) > callback)
 	: m_ok(false), m_loop(nullptr), m_stream(nullptr), m_thread(nullptr) {
+	resetPending = false;
+
 	if (!pws->isOk()) {
 		return;
 	}
@@ -197,9 +217,10 @@ PipeWireEngine::PipeWireEngine(const char *category, void *param, const std::fun
 		pws->pw_properties_new(PW_KEY_APP_NAME, "Mumble", PW_KEY_NODE_NAME, category, PW_KEY_MEDIA_CATEGORY, category,
 							   PW_KEY_MEDIA_TYPE, "Audio", PW_KEY_MEDIA_ROLE, "Communication", nullptr);
 
-	m_events          = std::make_unique< pw_stream_events >();
-	m_events->version = PW_VERSION_STREAM_EVENTS;
-	m_events->process = *callback.target< void (*)(void *) >();
+	m_events                = std::make_unique< pw_stream_events >();
+	m_events->version       = PW_VERSION_STREAM_EVENTS;
+	m_events->process       = *callback.target< void (*)(void *) >();
+	m_events->state_changed = stateChangedCallback;
 
 	m_stream = pws->pw_stream_new_simple(m_loop, category, props, m_events.get(), param);
 	if (!m_stream) {
