@@ -450,22 +450,26 @@ void PulseAudioSystem::context_state_callback(pa_context *c, void *userdata) {
 }
 
 void PulseAudioSystem::subscribe_callback(pa_context *, pa_subscription_event_type evt, unsigned int, void *userdata) {
-	switch (evt & PA_SUBSCRIPTION_EVENT_TYPE_MASK) {
-		case PA_SUBSCRIPTION_EVENT_NEW:
-		case PA_SUBSCRIPTION_EVENT_REMOVE:
-			break;
-		default:
-			return;
-	}
+	const auto type = evt & PA_SUBSCRIPTION_EVENT_TYPE_MASK;
 	switch (evt & PA_SUBSCRIPTION_EVENT_FACILITY_MASK) {
 		case PA_SUBSCRIPTION_EVENT_SINK:
 		case PA_SUBSCRIPTION_EVENT_SOURCE:
+			if (type != PA_SUBSCRIPTION_EVENT_NEW && type != PA_SUBSCRIPTION_EVENT_REMOVE) {
+				return;
+			}
+			qWarning("PulseAudio: Sinks or inputs changed (inserted or removed sound card)");
+			break;
+		case PA_SUBSCRIPTION_EVENT_SERVER:
+			// Emitted when the default sink or source changes
+			if (type != PA_SUBSCRIPTION_EVENT_CHANGE) {
+				return;
+			}
+			qWarning("PulseAudio: Server changed (e.g. default sink or source)");
 			break;
 		default:
 			return;
 	}
 	PulseAudioSystem *pas = reinterpret_cast< PulseAudioSystem * >(userdata);
-	qWarning("PulseAudio: Sinks or inputs changed (inserted or removed sound card)");
 	pas->query();
 }
 
@@ -941,9 +945,9 @@ void PulseAudioSystem::contextCallback(pa_context *c) {
 	Q_ASSERT(c == pacContext);
 	switch (m_pulseAudio.context_get_state(c)) {
 		case PA_CONTEXT_READY: {
-			bPulseIsGood = true;
-			const auto mask =
-				static_cast< pa_subscription_mask_t >(PA_SUBSCRIPTION_MASK_SINK | PA_SUBSCRIPTION_MASK_SOURCE);
+			bPulseIsGood    = true;
+			const auto mask = static_cast< pa_subscription_mask_t >(
+				PA_SUBSCRIPTION_MASK_SINK | PA_SUBSCRIPTION_MASK_SOURCE | PA_SUBSCRIPTION_MASK_SERVER);
 			m_pulseAudio.operation_unref(m_pulseAudio.context_subscribe(pacContext, mask, nullptr, this));
 			query();
 			break;
